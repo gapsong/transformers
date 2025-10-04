@@ -709,22 +709,25 @@ class GPTQConfig(QuantizationConfigMixin):
         if not (0 < self.damp_percent < 1):
             raise ValueError("damp_percent must between 0 and 1.")
         if self.dataset is not None:
-            if isinstance(self.dataset, str):
-                if self.dataset in ["ptb", "ptb-new"]:
+                if isinstance(self.dataset, str):
+                    if self.dataset in ["ptb", "ptb-new"]:
+                        # ERWEITERT: 'alpaca-cleaned' zur Liste in der Fehlermeldung hinzugefügt
+                        raise ValueError(
+                            f"""{self.dataset} dataset was deprecated. You can only choose between
+                            ['wikitext2','c4','c4-new', 'alpaca-cleaned']"""
+                        )
+                    # ERWEITERT: 'alpaca-cleaned' zur Liste der gültigen Datasets hinzugefügt
+                    if self.dataset not in ["wikitext2", "c4", "c4-new", "alpaca-cleaned"]:
+                        raise ValueError(
+                            f"""You have entered a string value for dataset. You can only choose between
+                            ['wikitext2','c4','c4-new', 'alpaca-cleaned'], but we found {self.dataset}"""
+                        )
+                elif not isinstance(self.dataset, list):
+                    # ERWEITERT: 'alpaca-cleaned' zur Liste in der Fehlermeldung hinzugefügt
                     raise ValueError(
-                        f"""{self.dataset} dataset was deprecated. You can only choose between
-                        ['wikitext2','c4','c4-new']"""
+                        f"""dataset needs to be either a list of string or a value in
+                        ['wikitext2','c4','c4-new', 'alpaca-cleaned'], but we found {self.dataset}"""
                     )
-                if self.dataset not in ["wikitext2", "c4", "c4-new"]:
-                    raise ValueError(
-                        f"""You have entered a string value for dataset. You can only choose between
-                        ['wikitext2','c4','c4-new'], but we found {self.dataset}"""
-                    )
-            elif not isinstance(self.dataset, list):
-                raise ValueError(
-                    f"""dataset needs to be either a list of string or a value in
-                    ['wikitext2','c4','c4-new'], but we found {self.dataset}"""
-                )
 
         # make sure backend is back/forward compatible with both gptqmodel (full) and auto-gptq (partial)
         if is_gptqmodel_available():

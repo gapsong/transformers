@@ -13,7 +13,8 @@
 # limitations under the License.
 import importlib
 from typing import TYPE_CHECKING, Optional
-
+import re
+from pathlib import Path
 from packaging import version
 
 from .base import HfQuantizer
@@ -92,7 +93,7 @@ class GptqHfQuantizer(HfQuantizer):
             device_map = {"": torch.device("cpu")}
         # Only with auto-gptq do not support CPU, we should move the model to cuda if available.
         if not is_gptqmodel_available() and device_map in ("cpu", {"": torch.device("cpu")}):
-            device_map == {"": 0}
+            device_map = {"": 0}
         return device_map
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
@@ -106,14 +107,51 @@ class GptqHfQuantizer(HfQuantizer):
             else:
                 model = self.optimum_quantizer.convert_model(model, **kwargs)
 
+    @staticmethod
+    def derive_adapter_path_from_residual(
+        model_name_or_path: str,
+        base_dir: Optional[str] = None,
+        adapter_prefix: str = "daniel_adapter",
+    ) -> str:
+        """
+        Given a residual model path like:
+        train_results_group_exp/HuggingFaceTB_SmolLM2-1.7B_residual_base_r128_fp16
+        return the corresponding adapter path:
+        train_results_group_exp/quantized_residuals_r128/daniel_adapter_r128_HuggingFaceTB_SmolLM2-1.7B
+
+        If model_name_or_path is absolute, the result will be absolute.
+        If it's relative, the result will be relative to its parent dir.
+        You can override the root with base_dir.
+        """
+        residual_path = Path(model_name_or_path)
+        # Parent dir to place the quantized_residuals_r{r} folder next to
+        root = Path(base_dir) if base_dir is not None else residual_path.parent
+
+        name = residual_path.name
+        m = re.match(r"(?P<model_clean>.+)_residual_base_r(?P<rank>\d+)_fp16$", name)
+        if not m:
+            raise ValueError(
+                f"Cannot parse residual model name: {name}. "
+                "Expected pattern '*_residual_base_r<rank>_fp16'."
+            )
+
+        model_clean = m.group("model_clean")
+        rank = m.group("rank")
+
+        adapter_dir = root / f"quantized_residuals_r{rank}" / f"{adapter_prefix}_r{rank}_{model_clean}"
+        return str(adapter_dir)
+
     def _process_model_after_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if self.pre_quantized:
             model = self.optimum_quantizer.post_init_model(model)
         else:
             if self.quantization_config.tokenizer is None:
                 self.quantization_config.tokenizer = model.name_or_path
-
-            self.optimum_quantizer.quantize_model(model, self.quantization_config.tokenizer)
+            adapter_path = None
+            if "_residual_base_r" in model.name_or_path:
+                # derive next to the residual by default; pass base_dir if you need to override the root
+                adapter_path = self.derive_adapter_path_from_residual(model.name_or_path)
+            self.optimum_quantizer.quantize_model(model, self.quantization_config.tokenizer, adapter_path)
             model.config.quantization_config = GPTQConfig.from_dict(self.optimum_quantizer.to_dict())
 
     @property
