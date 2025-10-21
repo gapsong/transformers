@@ -626,7 +626,7 @@ class Trainer:
         model_forward = (
             unwrapped_model.forward
             if not _is_peft_model(unwrapped_model)
-            else unwrapped_model.get_base_model().forward
+            else unwrapped_model.base_model.forward
         )
         forward_params = inspect.signature(model_forward).parameters
 

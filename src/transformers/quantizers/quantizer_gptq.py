@@ -114,32 +114,115 @@ class GptqHfQuantizer(HfQuantizer):
         adapter_prefix: str = "daniel_adapter",
     ) -> str:
         """
-        Given a residual model path like:
-        train_results_group_exp/HuggingFaceTB_SmolLM2-1.7B_residual_base_r128_fp16
-        return the corresponding adapter path:
-        train_results_group_exp/quantized_residuals_r128/daniel_adapter_r128_HuggingFaceTB_SmolLM2-1.7B
+        Robustly derive the LoRA adapter directory for various residual layouts.
 
-        If model_name_or_path is absolute, the result will be absolute.
-        If it's relative, the result will be relative to its parent dir.
-        You can override the root with base_dir.
+        Supported inputs (basename of model_name_or_path):
+          - "<model>_residual_base_r<rank>_fp16"
+          - "w_res_<model>_r<rank>_daniel_<bits>bit_gs<g>_<calib>"
+          - Iteration folders: "quantized_iter_<t>_..." or "residual_iter_<t>_fp16"
+            located inside a folder named: "quantized_residuals_r<rank>".
+
+        Returns:
+          ".../quantized_residuals_r<rank>/<adapter_prefix>_r<rank>_<model>"
         """
         residual_path = Path(model_name_or_path)
-        # Parent dir to place the quantized_residuals_r{r} folder next to
         root = Path(base_dir) if base_dir is not None else residual_path.parent
-
         name = residual_path.name
+
+        # Case 1: FP residual base
         m = re.match(r"(?P<model_clean>.+)_residual_base_r(?P<rank>\d+)_fp16$", name)
-        if not m:
-            raise ValueError(
-                f"Cannot parse residual model name: {name}. "
-                "Expected pattern '*_residual_base_r<rank>_fp16'."
+        if m:
+            model_clean = m.group("model_clean")
+            rank = m.group("rank")
+            adapter_dir = root / f"quantized_residuals_r{rank}" / f"{adapter_prefix}_r{rank}_{model_clean}"
+            return str(adapter_dir)
+
+        # Case 2: Quantized residual artifact "w_res_<model>_r<rank>_..."
+        m = re.match(r"w_res_(?P<model_clean>.+)_r(?P<rank>\d+)_", name)
+        if m:
+            model_clean = m.group("model_clean")
+            rank = m.group("rank")
+            # If already inside quantized_residuals_r<rank>, use that as root
+            if re.match(rf"quantized_residuals_r{rank}$", root.name):
+                adapter_dir = root / f"{adapter_prefix}_r{rank}_{model_clean}"
+            else:
+                adapter_dir = root / f"quantized_residuals_r{rank}" / f"{adapter_prefix}_r{rank}_{model_clean}"
+            return str(adapter_dir)
+
+        # Case 3: Inside a quantized_residuals_r<rank> directory (iterations etc.)
+        parent = residual_path.parent
+        m_parent = re.match(r"quantized_residuals_r(?P<rank>\d+)$", parent.name)
+        if m_parent:
+            rank = m_parent.group("rank")
+            # Prefer the latest adapter_iter_<t> numerically
+            candidates = [
+                d for d in parent.iterdir()
+                if d.is_dir() and d.name.startswith(f"{adapter_prefix}_r{rank}_")
+            ]
+            if candidates:
+                # Split into adapter_iter_t and base adapter
+                iter_adapters = []
+                base_adapters = []
+                for d in candidates:
+                    m_iter = re.match(rf"{adapter_prefix}_r{rank}_.+?/??$", d.name)
+                    # Detect explicit iteration folders like 'adapter_iter_<t>' as separate naming too
+                    m_alt = re.match(r"adapter_iter_(?P<t>\d+)$", d.name)
+                    if m_alt:
+                        try:
+                            iter_adapters.append((int(m_alt.group("t")), d))
+                        except Exception:
+                            pass
+                    else:
+                        base_adapters.append(d)
+                if iter_adapters:
+                    iter_adapters.sort(key=lambda x: x[0])
+                    return str(iter_adapters[-1][1])
+                # If we didn't find explicit 'adapter_iter_*', try to infer latest by mtime
+                try:
+                    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+                    return str(latest)
+                except Exception:
+                    return str(sorted(candidates)[-1])
+            # Try to infer model_clean from a sibling w_res_* directory
+            model_clean = None
+            for d in parent.iterdir():
+                if not d.is_dir():
+                    continue
+                mm = re.match(r"w_res_(?P<model_clean>.+)_r(?P<r>\d+)_", d.name)
+                if mm and mm.group("r") == rank:
+                    model_clean = mm.group("model_clean")
+                    break
+            if model_clean:
+                pref = parent / f"{adapter_prefix}_r{rank}_{model_clean}"
+                if pref.exists():
+                    return str(pref)
+            # Fallback: first matching adapter if available
+            candidates = sorted(
+                d for d in parent.iterdir()
+                if d.is_dir() and d.name.startswith(f"{adapter_prefix}_r{rank}_")
             )
+            if candidates:
+                return str(candidates[0])
 
-        model_clean = m.group("model_clean")
-        rank = m.group("rank")
+        # Case 4: Look one or two levels up for a quantized_residuals_r<rank> folder
+        for anc in [residual_path.parent, residual_path.parent.parent if residual_path.parent else None]:
+            if anc is None:
+                continue
+            m_anc = re.match(r"quantized_residuals_r(?P<rank>\d+)$", anc.name)
+            if m_anc:
+                rank = m_anc.group("rank")
+                candidates = sorted(
+                    d for d in anc.iterdir()
+                    if d.is_dir() and d.name.startswith(f"{adapter_prefix}_r{rank}_")
+                )
+                if candidates:
+                    return str(candidates[0])
 
-        adapter_dir = root / f"quantized_residuals_r{rank}" / f"{adapter_prefix}_r{rank}_{model_clean}"
-        return str(adapter_dir)
+        raise ValueError(
+            f"Cannot derive adapter path from '{model_name_or_path}'. "
+            "Expected names like '*_residual_base_r<rank>_fp16' or 'w_res_<model>_r<rank>_...' "
+            "or be located inside a 'quantized_residuals_r<rank>/' directory."
+        )
 
     def _process_model_after_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if self.pre_quantized:
@@ -148,9 +231,21 @@ class GptqHfQuantizer(HfQuantizer):
             if self.quantization_config.tokenizer is None:
                 self.quantization_config.tokenizer = model.name_or_path
             adapter_path = None
-            if "_residual_base_r" in model.name_or_path:
-                # derive next to the residual by default; pass base_dir if you need to override the root
-                adapter_path = self.derive_adapter_path_from_residual(model.name_or_path)
+            name_path = Path(model.name_or_path)
+            name = name_path.name
+            parent = name_path.parent
+            # Derive adapter path for multiple residual naming schemes
+            if (
+                "_residual_base_r" in name
+                or name.startswith("w_res_")
+                or name.startswith("quantized_iter_")
+                or name.startswith("residual_iter_")
+                or re.match(r"quantized_residuals_r\d+", parent.name) is not None
+            ):
+                try:
+                    adapter_path = self.derive_adapter_path_from_residual(model.name_or_path)
+                except Exception as e:
+                    logger.warning(f"[GPTQ] Could not derive adapter path for '{model.name_or_path}': {e}")
             self.optimum_quantizer.quantize_model(model, self.quantization_config.tokenizer, adapter_path)
             model.config.quantization_config = GPTQConfig.from_dict(self.optimum_quantizer.to_dict())
 
