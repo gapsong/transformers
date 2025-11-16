@@ -3313,38 +3313,24 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
 
         # Only save the model itself if we are using distributed training
         model_to_save = unwrap_model(self)
-        spqr_adapter_data = None
-        # 1. Prüfen, ob der injizierte Adapter existiert
+        # Save SPQR adapter if present
         if hasattr(model_to_save, "all_sparse_outliers"):
-            logger.info("SPQR adapter found. Extracting for separate saving.")
-            
-            # 2. Daten extrahieren und SOFORT aus dem Modell entfernen
-            spqr_adapter_data = model_to_save.all_sparse_outliers
+            logger.info("SPQR adapter found. Saving separately.")
+            adapter_data = model_to_save.all_sparse_outliers
             delattr(model_to_save, "all_sparse_outliers")
-
-            # 4. Eine Hilfsfunktion zum Speichern eines Adapters im PEFT-Stil
-            def _save_adapter(adapter_dict, adapter_type):
-                if not adapter_dict:
-                    return
-                
-                adapter_dir = os.path.join(save_directory, f"spqr_adapter_{adapter_type}")
-                os.makedirs(adapter_dir, exist_ok=True)
-                
-                weights_path = os.path.join(adapter_dir, "adapter_model.pt")
-                torch.save(adapter_dict, weights_path)
-                # Eigentlich brauche ich die config ja sowieso nicht 
-                # config = {
-                #     "base_model_name_or_path": save_directory,
-                #     "adapter_type": f"SPQR_{adapter_type.upper()}",
-                #     "target_modules": list(adapter_dict.keys())
-                # }
-                # config_path = os.path.join(adapter_dir, "adapter_config.json")
-                # with open(config_path, "w") as f:
-                #     json.dump(config, f, indent=4)
-                logger.info(f"SPQR {adapter_type} adapter saved to {adapter_dir}")
-
-            # 5. Beide Adapter speichern
-            _save_adapter(spqr_adapter_data, "all_sparse_outliers")
+            adapter_dir = os.path.join(save_directory, "spqr_adapter_all_sparse_outliers")
+            os.makedirs(adapter_dir, exist_ok=True)
+            torch.save(adapter_data, os.path.join(adapter_dir, "adapter_model.pt"))
+            logger.info(f"SPQR adapter saved to {adapter_dir}")
+        
+        if hasattr(model_to_save, "all_hessian_inverse_layers"):
+            logger.info("all_hessian_inverse_layers found. Saving separately.")
+            adapter_data = model_to_save.all_hessian_inverse_layers
+            delattr(model_to_save, "all_hessian_inverse_layers")
+            adapter_dir = os.path.join(save_directory, "all_hessian_inverse_layers")
+            os.makedirs(adapter_dir, exist_ok=True)
+            torch.save(adapter_data, os.path.join(adapter_dir, "all_hessian_inverse_layers.pt"))
+            logger.info(f"all_hessian_inverse_layers adapter saved to {adapter_dir}")
                     
         # save the string version of dtype to the config, e.g. convert torch.float32 => "float32"
         # we currently don't use this setting automatically, but may start to use with v5
