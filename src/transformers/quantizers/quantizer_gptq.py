@@ -111,14 +111,14 @@ class GptqHfQuantizer(HfQuantizer):
     def derive_adapter_path_from_residual(
         model_name_or_path: str,
         base_dir: Optional[str] = None,
-        adapter_prefix: str = "daniel_adapter",
+        adapter_prefix: str = "sa_svd_adapter",
     ) -> str:
         """
         Robustly derive the LoRA adapter directory for various residual layouts.
 
         Supported inputs (basename of model_name_or_path):
           - "<model>_residual_base_r<rank>_fp16"
-          - "w_res_<model>_r<rank>_daniel_<bits>bit_gs<g>_<calib>"
+          - "w_res_<model>_r<rank>_sa_svd_<bits>bit_gs<g>_<calib>"
           - Iteration folders: "quantized_iter_<t>_..." or "residual_iter_<t>_fp16"
             located inside a folder named: "quantized_residuals_r<rank>".
 
